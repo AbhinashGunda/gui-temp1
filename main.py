@@ -9,6 +9,7 @@ from ui.client_detail_tabs import ClientDetailTabs
 from ui.views.client_view import ClientView
 from ui.views.merchant_view import MerchantView
 from ui.views.ratesheet_view import RatesheetView
+from ui.views.importer_view import ImporterView
 
 class NetFXApp(tk.Tk):
     def __init__(self):
@@ -46,6 +47,9 @@ class NetFXApp(tk.Tk):
         create_menu.add_command(label="c_client", command=self.open_create_client_popup)
         create_menu.add_command(label="c_merchant", command=self.open_create_merchant_popup)
         create_menu.add_command(label="c_ratesheet", command=self.open_create_ratesheet_popup)
+        # separator + importer entry
+        create_menu.add_separator()
+        create_menu.add_command(label="Insert via Excel/CSV", command=self.open_insert_file_popup)
         menubar.add_cascade(label="Create", menu=create_menu)
         self.config(menu=menubar)
 
@@ -215,6 +219,32 @@ class NetFXApp(tk.Tk):
 
         ttk.Button(frm, text="Create", command=on_create_ratesheet).grid(row=6, column=0, columnspan=2, pady=8)
         frm.grid_columnconfigure(1, weight=1)
+
+    # ----------------------
+    # New: Insert via Excel/CSV popup
+    # ----------------------
+    def open_insert_file_popup(self):
+        """
+        Open a popup containing the ImporterView (ui.views.importer_view.ImporterView).
+        """
+        popup = tk.Toplevel(self)
+        popup.title("Insert via Excel/CSV")
+        # reasonable default size
+        popup.geometry("700x360")
+        popup.transient(self)
+        # Create the ImporterView inside the popup and pack it
+        frame = ImporterView(popup, self.db)
+        frame.pack(fill='both', expand=True)
+
+        # Allow importer to trigger refreshes on this popup's toplevel
+        def on_close():
+            try:
+                frame.destroy()
+            except Exception:
+                pass
+            popup.destroy()
+        popup.protocol("WM_DELETE_WINDOW", on_close)
+        return popup
 
     # ----------------------
     # Existing app behaviour
