@@ -7,6 +7,8 @@ from ui.sidebar import Sidebar
 from ui.tabs import Tabs
 from ui.client_view import ClientView
 from ui.client_detail_tabs import ClientDetailTabs
+from ui.merchant_view import MerchantView
+from ui.ratesheet_view import RatesheetView
 
 class NetFXApp(tk.Tk):
     def __init__(self):
@@ -28,12 +30,14 @@ class NetFXApp(tk.Tk):
         self.tabs.grid(row=0, column=1, sticky='nsew')
 
     def on_item_selected(self, text):
-        # Open a tab depending on selection
         if text == 'Clients':
-            # Open clients list tab
             self.tabs.open_tab('clients_list', 'Clients', self.clients_list_frame)
+        elif text == 'Merchants':
+            # global merchants view
+            self.tabs.open_tab('merchants_list', 'Merchants', lambda master: MerchantView(master, self.db, None))
+        elif text == 'Client Ratesheets':
+            self.tabs.open_tab('ratesheets_list', 'Client Ratesheets', lambda master: RatesheetView(master, self.db, None))
         else:
-            # generic placeholder for other items
             self.tabs.open_tab(text.lower(), text, lambda master: ttk.Frame(master))
 
     def clients_list_frame(self, master):
@@ -54,7 +58,6 @@ class NetFXApp(tk.Tk):
             values = tree.item(iid, 'values')
             sds = int(values[0])
             title = f"Client {sds}"
-            # Open a tab containing client-specific subtabs (Merchants & Ratesheets)
             self.tabs.open_tab(f'client_{sds}', title, lambda master: ClientDetailTabs(master, self.db, sds))
         tree.bind('<Double-1>', on_double)
         return frame

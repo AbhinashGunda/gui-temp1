@@ -29,7 +29,6 @@ class ClientView(ttk.Frame):
             ent.grid(row=i, column=1, sticky='we', pady=4)
             frm.grid_columnconfigure(1, weight=1)
             self.entries[field] = ent
-            # Make sds_id readonly
             if field == 'sds_id':
                 ent.config(state='readonly')
         btns = ttk.Frame(frm)
@@ -44,7 +43,6 @@ class ClientView(ttk.Frame):
             return
         for k, ent in self.entries.items():
             val = data.get(k) if data.get(k) is not None else ''
-            # if readonly field, temporarily make normal to set
             if k == 'sds_id':
                 ent.config(state='normal')
                 ent.delete(0, 'end')

@@ -13,9 +13,7 @@ class ClientDetailTabs(ttk.Notebook):
         self._build()
 
     def _build(self):
-        # Merchants tab
         mframe = MerchantView(self, self.db, self.client_sds_id)
         self.add(mframe, text='Merchants')
-        # Ratesheets tab
         rframe = RatesheetView(self, self.db, self.client_sds_id)
-        self.add(rframe, text='Ratesheets')
+        self.add(rframe, text='Client Ratesheets')

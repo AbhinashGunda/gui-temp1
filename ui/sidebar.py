@@ -29,5 +29,4 @@ class Sidebar(ttk.Frame):
         if not sel:
             return
         text = event.widget.item(sel[0], 'text')
-        # call callback with the item text
         self.on_select(text)

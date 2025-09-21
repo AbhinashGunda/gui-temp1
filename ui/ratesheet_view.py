@@ -14,11 +14,12 @@ class RatesheetView(ttk.Frame):
     def _build(self):
         frm = ttk.Frame(self, padding=8)
         frm.pack(fill='both', expand=True)
-        lbl = ttk.Label(frm, text=f"Ratesheets for Client {self.client_sds_id}", font=(None, 12))
+        title = f"Ratesheets for Client {self.client_sds_id}" if self.client_sds_id else "Client Ratesheets (All)"
+        lbl = ttk.Label(frm, text=title, font=(None, 12))
         lbl.pack(anchor='w')
 
-        cols = ('ratesheet_id','merchant_id','effective_date','expiry_date')
-        self.tree = ttk.Treeview(frm, columns=cols, show='headings', height=8)
+        cols = ('ratesheet_id','merchant_id','merchant_name','client_name','effective_date','expiry_date')
+        self.tree = ttk.Treeview(frm, columns=cols, show='headings', height=12)
         for c in cols:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=140)
@@ -31,36 +32,68 @@ class RatesheetView(ttk.Frame):
         ttk.Button(btns, text='Delete', command=self.delete_selected).pack(side='left', padx=4)
 
     def load(self):
+        print(f"[RatesheetView] load() called for client_sds_id={self.client_sds_id}")
         for r in self.tree.get_children():
             self.tree.delete(r)
-        rates = self.db.fetch_ratesheets_by_client(self.client_sds_id)
-        for rs in rates:
-            self.tree.insert('', 'end', values=(rs['ratesheet_id'], rs.get('merchant_id'), rs.get('effective_date'), rs.get('expiry_date')))
+
+        if self.client_sds_id is None:
+            rates = self.db.fetch_all_ratesheets()
+            for rs in rates:
+                self.tree.insert('', 'end', values=(rs['ratesheet_id'], rs.get('merchant_id'), rs.get('merchant_name'), rs.get('client_name'), rs.get('effective_date'), rs.get('expiry_date')))
+        else:
+            rates = self.db.fetch_ratesheets_by_client(self.client_sds_id)
+            for rs in rates:
+                self.tree.insert('', 'end', values=(rs['ratesheet_id'], rs.get('merchant_id'), '', '', rs.get('effective_date'), rs.get('expiry_date')))
 
     def add_popup(self):
         popup = tk.Toplevel(self)
         popup.title('Add Ratesheet')
+
         ttk.Label(popup, text='Merchant ID (optional)').grid(row=0, column=0)
         mid = ttk.Entry(popup); mid.grid(row=0, column=1)
+
         ttk.Label(popup, text='Effective Date').grid(row=1, column=0)
         eff = ttk.Entry(popup); eff.grid(row=1, column=1)
+
         ttk.Label(popup, text='Expiry Date').grid(row=2, column=0)
         exp = ttk.Entry(popup); exp.grid(row=2, column=1)
+
         ttk.Label(popup, text='Rate Details').grid(row=3, column=0)
         details = ttk.Entry(popup); details.grid(row=3, column=1)
+
+        # If global view, require selecting a client
+        client_choice = None
+        if self.client_sds_id is None:
+            ttk.Label(popup, text='Client (select)').grid(row=4, column=0)
+            clients = self.db.fetch_all_clients()
+            client_names = [f"{c['sds_id']} - {c['entity_name']}" for c in clients]
+            client_choice = ttk.Combobox(popup, values=client_names, state='readonly')
+            client_choice.grid(row=4, column=1)
+            if client_names:
+                client_choice.current(0)
+
         def on_ok():
             merchant_id = int(mid.get()) if mid.get().strip() else None
-            self.db.insert_ratesheet(self.client_sds_id, merchant_id, eff.get().strip(), exp.get().strip(), details.get().strip())
+            target_client = self.client_sds_id
+            if target_client is None:
+                sel = client_choice.get()
+                if not sel:
+                    messagebox.showerror('Error', 'Select client'); return
+                target_client = int(sel.split(' - ')[0])
+            self.db.insert_ratesheet(target_client, merchant_id, eff.get().strip(), exp.get().strip(), details.get().strip())
             popup.destroy(); self.load()
-        ttk.Button(popup, text='OK', command=on_ok).grid(row=4, column=0, columnspan=2)
+
+        ttk.Button(popup, text='OK', command=on_ok).grid(row=5, column=0, columnspan=2)
 
     def edit_selected(self):
         sel = self.tree.selection()
-        if not sel: messagebox.showinfo('Select', 'Select a ratesheet'); return
+        if not sel:
+            messagebox.showinfo('Select', 'Select a ratesheet'); return
         vals = self.tree.item(sel[0], 'values')
         ratesheet_id = int(vals[0])
         rs = self.db.fetch_ratesheet_by_id(ratesheet_id)
-        if not rs: messagebox.showerror('Error', 'Not found'); return
+        if not rs:
+            messagebox.showerror('Error', 'Not found'); return
         popup = tk.Toplevel(self)
         popup.title('Edit Ratesheet')
         ttk.Label(popup, text='Merchant ID (optional)').grid(row=0, column=0)
@@ -71,6 +104,7 @@ class RatesheetView(ttk.Frame):
         exp = ttk.Entry(popup); exp.grid(row=2, column=1); exp.insert(0, rs.get('expiry_date') or '')
         ttk.Label(popup, text='Rate Details').grid(row=3, column=0)
         details = ttk.Entry(popup); details.grid(row=3, column=1); details.insert(0, rs.get('rate_details') or '')
+
         def on_ok():
             data = {
                 'merchant_id': int(mid.get()) if mid.get().strip() else None,
@@ -80,11 +114,13 @@ class RatesheetView(ttk.Frame):
             }
             self.db.update_ratesheet(ratesheet_id, data)
             popup.destroy(); self.load()
+
         ttk.Button(popup, text='OK', command=on_ok).grid(row=4, column=0, columnspan=2)
 
     def delete_selected(self):
         sel = self.tree.selection()
-        if not sel: messagebox.showinfo('Select', 'Select a ratesheet'); return
+        if not sel:
+            messagebox.showinfo('Select', 'Select a ratesheet'); return
         vals = self.tree.item(sel[0], 'values')
         ratesheet_id = int(vals[0])
         if messagebox.askyesno('Confirm', 'Delete ratesheet?'):
