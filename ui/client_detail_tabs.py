@@ -1,8 +1,11 @@
 # ui/client_detail_tabs.py
 import tkinter as tk
 from tkinter import ttk
-from views.merchant_view import MerchantView
-from views.ratesheet_view import RatesheetView
+# ui/client_detail_tabs.py
+# replace imports at top with:
+from .views.merchant_view import MerchantView
+from .views.ratesheet_view import RatesheetView
+
 
 class ClientDetailTabs(ttk.Notebook):
     """Sub-tabs for a single client's Merchants and Ratesheets."""
