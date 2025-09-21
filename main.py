@@ -5,10 +5,10 @@ from config import WINDOW_TITLE, WINDOW_SIZE
 from db.db_manager import DBManager
 from ui.sidebar import Sidebar
 from ui.tabs import Tabs
-from ui.client_view import ClientView
+from ui.views.client_view import ClientView
 from ui.client_detail_tabs import ClientDetailTabs
-from ui.merchant_view import MerchantView
-from ui.ratesheet_view import RatesheetView
+from ui.views.merchant_view import MerchantView
+from ui.views.ratesheet_view import RatesheetView
 
 class NetFXApp(tk.Tk):
     def __init__(self):
