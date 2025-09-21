@@ -1,3 +1,4 @@
+# main.py
 import tkinter as tk
 from tkinter import ttk
 from config import WINDOW_TITLE, WINDOW_SIZE
@@ -5,6 +6,7 @@ from db.db_manager import DBManager
 from ui.sidebar import Sidebar
 from ui.tabs import Tabs
 from ui.client_view import ClientView
+from ui.client_detail_tabs import ClientDetailTabs
 
 class NetFXApp(tk.Tk):
     def __init__(self):
@@ -31,22 +33,20 @@ class NetFXApp(tk.Tk):
             # Open clients list tab
             self.tabs.open_tab('clients_list', 'Clients', self.clients_list_frame)
         else:
-            # generic
+            # generic placeholder for other items
             self.tabs.open_tab(text.lower(), text, lambda master: ttk.Frame(master))
 
     def clients_list_frame(self, master):
         frame = ttk.Frame(master, padding=10)
-        # Treeview with clients
         cols = ('sds_id', 'entity_name', 'bank_user_id')
         tree = ttk.Treeview(frame, columns=cols, show='headings')
         for c in cols:
             tree.heading(c, text=c)
             tree.column(c, width=150)
         tree.pack(fill='both', expand=True)
-        # populate
         for row in self.db.fetch_all_clients():
             tree.insert('', 'end', values=(row['sds_id'], row['entity_name'], row['bank_user_id']))
-        # double click to open client tab
+
         def on_double(e):
             iid = tree.identify_row(e.y)
             if not iid:
@@ -54,7 +54,8 @@ class NetFXApp(tk.Tk):
             values = tree.item(iid, 'values')
             sds = int(values[0])
             title = f"Client {sds}"
-            self.tabs.open_tab(f'client_{sds}', title, lambda master: ClientView(master, self.db, sds))
+            # Open a tab containing client-specific subtabs (Merchants & Ratesheets)
+            self.tabs.open_tab(f'client_{sds}', title, lambda master: ClientDetailTabs(master, self.db, sds))
         tree.bind('<Double-1>', on_double)
         return frame
 

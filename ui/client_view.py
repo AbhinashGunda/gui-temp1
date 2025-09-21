@@ -1,4 +1,4 @@
-# ==========================
+# ui/client_view.py
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -55,7 +55,6 @@ class ClientView(ttk.Frame):
                 ent.insert(0, str(val))
 
     def save(self):
-        # gather editable fields
         payload = {}
         for k, ent in self.entries.items():
             if k == 'sds_id':
