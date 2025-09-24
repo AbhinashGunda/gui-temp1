@@ -22,7 +22,7 @@ import math
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, font as tkfont
 import pandas as pd
-
+import re
 # ----------------- Config -----------------
 PAGE_SIZE_OPTIONS = [50, 100, 200, 500]  # choices for page size
 DEFAULT_PAGE_SIZE = 200
@@ -39,6 +39,87 @@ page_size = DEFAULT_PAGE_SIZE
 sort_states = {}          # column -> bool (True means descending next toggle)
 
 # ----------------- Utility Functions -----------------
+
+def _first_nonempty_row_index(path, sheet):
+    """
+    Heuristic: find the first row index that has > half columns non-null.
+    Returns 0-based index suitable for pandas.read_excel(header=...).
+    """
+    # Read small chunk without headers to inspect first ~20 rows
+    try:
+        tmp = pd.read_excel(path, sheet_name=sheet, header=None, nrows=40)
+    except Exception:
+        return 0
+    for idx in range(len(tmp)):
+        row = tmp.iloc[idx]
+        non_null_count = row.notna().sum()
+        # tolerance: at least 30% of total columns non-empty OR at least 3 non-empty cells
+        if non_null_count >= max(3, int(0.3 * tmp.shape[1])):
+            return idx
+    return 0
+
+def _normalize_multiindex_columns(cols):
+    """
+    If pandas returned MultiIndex columns (multi-row header),
+    collapse into single string 'part1 | part2' ignoring empty parts.
+    """
+    if hasattr(cols, "levels") and isinstance(cols, pd.MultiIndex):
+        new_cols = []
+        for col in cols:
+            # col is tuple of header parts
+            parts = [str(p).strip() for p in col if (p is not None and str(p).strip() != "")]
+            txt = " | ".join(parts) if parts else "Unnamed"
+            new_cols.append(txt)
+        return new_cols
+    else:
+        # normal Index
+        return [str(c) for c in cols]
+
+def _make_unique_columns(cols):
+    """
+    Ensure column names are unique by appending suffixes where needed.
+    """
+    seen = {}
+    new_cols = []
+    for c in cols:
+        base = str(c)
+        if base == "" or re.match(r"Unnamed", base, flags=re.IGNORECASE):
+            base = "Unnamed"
+        if base not in seen:
+            seen[base] = 0
+            new_cols.append(base)
+        else:
+            seen[base] += 1
+            new_cols.append(f"{base}__{seen[base]}")
+    return new_cols
+
+def _clean_loaded_df(df):
+    """
+    Clean up the DataFrame after read_excel:
+    - Drop columns that are entirely NaN
+    - Drop rows that are entirely NaN
+    - Forward-fill to propagate merged cell values (common in Excel)
+    - Strip whitespace from string cells
+    - Remove duplicate empty columns
+    """
+    # Drop fully empty columns and rows
+    df = df.dropna(axis=1, how="all")
+    df = df.dropna(axis=0, how="all")
+
+    # If empty after this, return as-is
+    if df.shape[0] == 0 or df.shape[1] == 0:
+        return df
+
+    # Strip strings
+    df = df.applymap(lambda v: v.strip() if isinstance(v, str) else v)
+
+    # Forward-fill to emulate merged-cells behavior (both axis)
+    df = df.ffill(axis=0).ffill(axis=1)
+
+    # Reset index to ensure sequential integer index for Treeview
+    df = df.reset_index(drop=True)
+    return df
+
 def set_busy(state=True):
     """Set cursor and disable main buttons briefly while loading."""
     cursor = "watch" if state else ""
@@ -114,7 +195,7 @@ def browse_file():
             set_busy(False)
 
 def load_file():
-    """Load the selected sheet into current_df and display first page."""
+    """Smart load: detect header row, collapse multi-row headers, clean merged cells."""
     global current_df, filtered_df, page_index, sort_states
     file_path = entry_path.get().strip()
     if not file_path:
@@ -131,11 +212,35 @@ def load_file():
 
     try:
         set_busy(True)
-        df = pd.read_excel(file_path, sheet_name=sheet)
-        # Defensive: ensure columns are strings
-        df.columns = [str(c) for c in df.columns]
+        # Heuristic: determine header row index (0-based)
+        header_idx = _first_nonempty_row_index(file_path, sheet)
+        # Try reading with header at header_idx; pandas will produce MultiIndex if multiple header rows
+        df = pd.read_excel(file_path, sheet_name=sheet, header=header_idx)
+        # Normalize columns (handle MultiIndex headers)
+        cols = _normalize_multiindex_columns(df.columns)
+        cols = _make_unique_columns(cols)
+        df.columns = cols
+
+        # If first actual data row still looks like header placeholders (many "Unnamed"), try header_idx+1
+        unnamed_ratio = sum(1 for c in cols if re.match(r"Unnamed", str(c), flags=re.IGNORECASE)) / max(1, len(cols))
+        if unnamed_ratio > 0.4 and header_idx + 1 < 10:
+            # Try next row as header
+            try:
+                df2 = pd.read_excel(file_path, sheet_name=sheet, header=header_idx+1)
+                cols2 = _normalize_multiindex_columns(df2.columns)
+                cols2 = _make_unique_columns(cols2)
+                df2.columns = cols2
+                # If this produced fewer unnamed columns, use df2
+                unnamed_ratio2 = sum(1 for c in cols2 if re.match(r"Unnamed", str(c), flags=re.IGNORECASE)) / max(1, len(cols2))
+                if unnamed_ratio2 < unnamed_ratio:
+                    df = df2
+            except Exception:
+                pass
+
+        # Clean dataframe (drop empty cols/rows, forward fill merged cells)
+        df = _clean_loaded_df(df)
+
         current_df = df
-        # reset filters/sort/page
         filtered_df = current_df.copy()
         page_index = 0
         sort_states = {}
@@ -145,53 +250,61 @@ def load_file():
     finally:
         set_busy(False)
 
-# ----------------- Display / Treeview -----------------
 def display_dataframe_in_tree(df: pd.DataFrame):
     """
-    Display the provided DataFrame in the Treeview.
-    This routine expects df to be the slice (page) to show.
+    Display DataFrame page in treeview. This version expects df to be a proper rectangular
+    DataFrame with unique column names (as produced by the loader).
     """
     clear_tree()
     if df is None or df.empty:
         update_status()
         return
 
-    cols = list(df.columns)
+    # Ensure columns are strings and unique
+    cols = [str(c) for c in df.columns]
+    cols = _make_unique_columns(cols)
     tree["columns"] = cols
-    tree["show"] = "headings"  # hide tree's first implicit column
+    tree["show"] = "headings"
 
-    # Configure headings + clickable sort command
+    # Configure headings with sort command
     for col in cols:
-        # Use lambda default capture to bind current col
-        tree.heading(col, text=col, anchor="w",
-                     command=lambda _col=col: treeview_sort_column(_col))
-        tree.column(col, width=100, anchor="w", minwidth=50, stretch=True)
+        tree.heading(col, text=col, anchor="w", command=lambda _col=col: treeview_sort_column(_col))
+        tree.column(col, width=120, anchor="w", minwidth=50, stretch=False)
 
-    # Insert rows (convert NaN -> "")
+    # Insert rows, flatten multi-line text but keep it readable
     df_display = df.fillna("")
-    # Convert rows to list of lists for insertion
     rows = df_display.to_numpy().tolist()
     for r in rows:
-        # store printable strings
-        tree.insert("", tk.END, values=[str(x) for x in r])
+        # limit cell length to avoid huge single cells, but preserve content
+        safe_vals = []
+        for x in r:
+            s = "" if pd.isna(x) else str(x)
+            # replace newlines with space so Treeview doesn't visually cramp lines
+            s = s.replace("\r", " ").replace("\n", " ")
+            # optionally truncate very long strings to keep UI responsive
+            if len(s) > 500:
+                s = s[:497] + "..."
+            safe_vals.append(s)
+        tree.insert("", tk.END, values=safe_vals)
 
-    # Auto-adjust column widths using a sample (fast)
+    # Auto-adjust column widths using header + a small sample
     try:
         tmp = tkfont.Font(font=("TkDefaultFont", 9))
         sample_rows = rows if len(rows) <= 200 else rows[:200]
         for i, col in enumerate(cols):
-            max_text = max([str(col)] + [str(r[i]) for r in sample_rows], key=len) if sample_rows else str(col)
-            new_w = min(max(80, tmp.measure(max_text) + 20), 500)
+            # consider header and sample values
+            sample_texts = [str(col)] + [str(r[i]) for r in sample_rows if len(r) > i]
+            max_text = max(sample_texts, key=len) if sample_texts else str(col)
+            new_w = min(max(100, tmp.measure(max_text) + 20), 500)
             tree.column(col, width=new_w)
     except Exception:
-        # ignore measurement errors (platform issues)
         pass
 
-    # Scroll to top of tree
     if tree.get_children():
         tree.see(tree.get_children()[0])
 
     update_status()
+
 
 def display_current_page():
     """Get slice for current page and render it."""
