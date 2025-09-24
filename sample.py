@@ -93,31 +93,35 @@ def _make_unique_columns(cols):
             new_cols.append(f"{base}__{seen[base]}")
     return new_cols
 
-def _clean_loaded_df(df):
+def _clean_loaded_df(df, header_row_count=1):
     """
-    Clean up the DataFrame after read_excel:
-    - Drop columns that are entirely NaN
-    - Drop rows that are entirely NaN
-    - Forward-fill to propagate merged cell values (common in Excel)
-    - Strip whitespace from string cells
-    - Remove duplicate empty columns
+    Clean the DataFrame in a *non-destructive* way:
+    - Do NOT drop any rows or columns (preserve everything exactly).
+    - Strip whitespace from string cells.
+    - Forward-fill only within the header rows area (to interpret merged headers),
+      but do NOT forward-fill the actual data rows (so you don't modify real data).
+    - Do not reset the index (preserve original indexing).
+    - Returns cleaned DataFrame (same shape as input).
     """
-    # Drop fully empty columns and rows
-    df = df.dropna(axis=1, how="all")
-    df = df.dropna(axis=0, how="all")
-
-    # If empty after this, return as-is
-    if df.shape[0] == 0 or df.shape[1] == 0:
+    if df is None:
         return df
 
-    # Strip strings
+    # strip strings across entire frame, preserve empties
     df = df.applymap(lambda v: v.strip() if isinstance(v, str) else v)
 
-    # Forward-fill to emulate merged-cells behavior (both axis)
-    df = df.ffill(axis=0).ffill(axis=1)
+    # If header_row_count > 1 and dataframe has at least that many rows,
+    # forward-fill only within first header_row_count rows to help collapse multi-row headers.
+    # This will not touch actual data rows below the header rows.
+    try:
+        if header_row_count and header_row_count > 0 and df.shape[0] >= header_row_count:
+            header_block = df.iloc[:header_row_count].copy()
+            header_block_ffill = header_block.ffill(axis=1).ffill(axis=0)
+            # write back only the header block to preserve the rest
+            df.iloc[:header_row_count] = header_block_ffill
+    except Exception:
+        # If anything fails, we leave df as-is (non-destructive)
+        pass
 
-    # Reset index to ensure sequential integer index for Treeview
-    df = df.reset_index(drop=True)
     return df
 
 def set_busy(state=True):
@@ -195,7 +199,10 @@ def browse_file():
             set_busy(False)
 
 def load_file():
-    """Smart load: detect header row, collapse multi-row headers, clean merged cells."""
+    """
+    Non-destructive load: detect header start row, collapse multi-row headers,
+    but preserve every row and column exactly as read from Excel.
+    """
     global current_df, filtered_df, page_index, sort_states
     file_path = entry_path.get().strip()
     if not file_path:
@@ -212,34 +219,27 @@ def load_file():
 
     try:
         set_busy(True)
-        # Heuristic: determine header row index (0-based)
+        # Heuristic: detect first non-empty-ish row to use as header start (0-based)
         header_idx = _first_nonempty_row_index(file_path, sheet)
-        # Try reading with header at header_idx; pandas will produce MultiIndex if multiple header rows
-        df = pd.read_excel(file_path, sheet_name=sheet, header=header_idx)
-        # Normalize columns (handle MultiIndex headers)
+
+        # Read with that header index. We keep header rows count as 1 by default,
+        # but we'll also handle MultiIndex if pandas provides it.
+        df = pd.read_excel(file_path, sheet_name=sheet, header=header_idx, dtype=object)
+
+        # Normalize MultiIndex columns if present (collapse parts)
         cols = _normalize_multiindex_columns(df.columns)
         cols = _make_unique_columns(cols)
         df.columns = cols
 
-        # If first actual data row still looks like header placeholders (many "Unnamed"), try header_idx+1
-        unnamed_ratio = sum(1 for c in cols if re.match(r"Unnamed", str(c), flags=re.IGNORECASE)) / max(1, len(cols))
-        if unnamed_ratio > 0.4 and header_idx + 1 < 10:
-            # Try next row as header
-            try:
-                df2 = pd.read_excel(file_path, sheet_name=sheet, header=header_idx+1)
-                cols2 = _normalize_multiindex_columns(df2.columns)
-                cols2 = _make_unique_columns(cols2)
-                df2.columns = cols2
-                # If this produced fewer unnamed columns, use df2
-                unnamed_ratio2 = sum(1 for c in cols2 if re.match(r"Unnamed", str(c), flags=re.IGNORECASE)) / max(1, len(cols2))
-                if unnamed_ratio2 < unnamed_ratio:
-                    df = df2
-            except Exception:
-                pass
+        # Non-destructive cleaning: strip strings and forward-fill only header block if needed.
+        # Determine how many header rows pandas treated as header:
+        header_row_count = 1
+        if isinstance(df.columns, pd.MultiIndex):
+            header_row_count = len(df.columns.levels)  # fallback; not destructive
+        # call cleaner (this will NOT drop rows/cols)
+        df = _clean_loaded_df(df, header_row_count=header_row_count)
 
-        # Clean dataframe (drop empty cols/rows, forward fill merged cells)
-        df = _clean_loaded_df(df)
-
+        # Preserve the dataframe exactly (do not drop empty rows/columns)
         current_df = df
         filtered_df = current_df.copy()
         page_index = 0
@@ -250,53 +250,59 @@ def load_file():
     finally:
         set_busy(False)
 
+
 def display_dataframe_in_tree(df: pd.DataFrame):
     """
-    Display DataFrame page in treeview. This version expects df to be a proper rectangular
-    DataFrame with unique column names (as produced by the loader).
+    Display DataFrame page in treeview. This version is non-destructive:
+    - It does not remove any columns or rows.
+    - It converts values to strings for display but keeps empty cells visible.
     """
     clear_tree()
-    if df is None or df.empty:
+    if df is None:
         update_status()
         return
 
-    # Ensure columns are strings and unique
+    # Ensure column names are strings (keep whatever text was read, even if 'Unnamed')
     cols = [str(c) for c in df.columns]
-    cols = _make_unique_columns(cols)
-    tree["columns"] = cols
+    # Make unique names for internal Treeview use but keep displayed header the same
+    display_cols = _make_unique_columns(cols)
+    tree["columns"] = display_cols
     tree["show"] = "headings"
 
-    # Configure headings with sort command
-    for col in cols:
-        tree.heading(col, text=col, anchor="w", command=lambda _col=col: treeview_sort_column(_col))
-        tree.column(col, width=120, anchor="w", minwidth=50, stretch=False)
+    # Configure headings (display original column text)
+    for internal_col, display_name in zip(display_cols, cols):
+        tree.heading(internal_col, text=display_name, anchor="w",
+                     command=lambda _col=internal_col: treeview_sort_column(_col))
+        tree.column(internal_col, width=120, anchor="w", minwidth=50, stretch=False)
 
-    # Insert rows, flatten multi-line text but keep it readable
-    df_display = df.fillna("")
+    # Insert rows preserving empty values
+    # Convert values to strings but keep empty strings for NA/None
+    df_display = df.copy()
+    # Replace newlines in cell strings so Treeview rows remain one-line
+    def _cell_to_str(v):
+        if pd.isna(v):
+            return ""
+        s = str(v)
+        s = s.replace("\r", " ").replace("\n", " ")
+        # do not truncate (to honor "no data removal"); but very long strings may make UI slow
+        return s
+
     rows = df_display.to_numpy().tolist()
     for r in rows:
-        # limit cell length to avoid huge single cells, but preserve content
-        safe_vals = []
-        for x in r:
-            s = "" if pd.isna(x) else str(x)
-            # replace newlines with space so Treeview doesn't visually cramp lines
-            s = s.replace("\r", " ").replace("\n", " ")
-            # optionally truncate very long strings to keep UI responsive
-            if len(s) > 500:
-                s = s[:497] + "..."
-            safe_vals.append(s)
+        safe_vals = [_cell_to_str(x) for x in r]
         tree.insert("", tk.END, values=safe_vals)
 
-    # Auto-adjust column widths using header + a small sample
+    # Auto-adjust column widths using header + small sample (attempt to keep readable)
     try:
         tmp = tkfont.Font(font=("TkDefaultFont", 9))
         sample_rows = rows if len(rows) <= 200 else rows[:200]
-        for i, col in enumerate(cols):
-            # consider header and sample values
-            sample_texts = [str(col)] + [str(r[i]) for r in sample_rows if len(r) > i]
-            max_text = max(sample_texts, key=len) if sample_texts else str(col)
-            new_w = min(max(100, tmp.measure(max_text) + 20), 500)
-            tree.column(col, width=new_w)
+        for i, internal_col in enumerate(display_cols):
+            # pick header text + sample values
+            header_text = cols[i] if i < len(cols) else internal_col
+            sample_texts = [header_text] + [str(r[i]) for r in sample_rows if len(r) > i]
+            max_text = max(sample_texts, key=len) if sample_texts else header_text
+            new_w = min(max(100, tmp.measure(max_text) + 20), 700)
+            tree.column(internal_col, width=new_w)
     except Exception:
         pass
 
